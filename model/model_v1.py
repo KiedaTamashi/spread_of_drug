@@ -93,11 +93,13 @@ def data_preprocess(data,timestep=8):
 class VAE(Generator):
 
     def __init__(self, hidden_size, learning_rate=1e-2,batch_size=1):
-        self.input_tensor = tf.placeholder(
+        # TODO: modify the hardcoded numbers
 
-            tf.float32, [None, 3*3,2]),tf.placeholder(tf.float32, [None, 8, 69])
+        self.input_tensor = (tf.placeholder(tf.float32, [batch_size, 3*3,2]),
+                             tf.placeholder(tf.float32, [batch_size, 8, 69]))
+
         # self.label_tensor = tf.placeholder(tf.float32, [None, 8, 69])
-        self.lr = 0.001
+        self.lr = learning_rate
 
         #
         with arg_scope([layers.conv2d, layers.conv2d_transpose],
@@ -110,18 +112,19 @@ class VAE(Generator):
                 #input_[tensor batch_size, num_of_location ,2]
                 input_data,label_data = self.input_tensor
                 # label_data = self.label_tensor
+                # TODO: why is hiddensize timed by 2, get it: outputing mu & sigma, each length hidden_size
                 encoded = encoder(input_data, hidden_size * 2)
                 #encoded is a tensor
-                mean = encoded[:, :hidden_size]
-                stddev = tf.sqrt(tf.exp(encoded[:, hidden_size:]))
+                mean = encoded[:, :hidden_size] # mu
+                stddev = tf.sqrt(tf.exp(encoded[:, hidden_size:])) # sigma
 
                 epsilon = tf.random_normal([tf.shape(mean)[0], hidden_size])
-                input_sample = mean + epsilon * stddev
+                input_sample = mean + epsilon * stddev # shape? b,h
                 # TODO add location to do feature confusion with input_sample
                 #  input (?,64)
 
-
-                output_tensor = RNNdecoder(tf.reshape(input_sample,[-1,input_sample.shape[-1]]))
+                # TODO: explicityly pass in the params here
+                output_tensor = RNNdecoder(tf.reshape(input_sample,[-1,input_sample.shape[-1]])) # TODO why is the reshape necessary
                 # [batchsize,num_of_years,num_of_drugs]
 
                 # output_tensor = decoder(input_sample)
@@ -130,10 +133,10 @@ class VAE(Generator):
             #     self.sampled_tensor = RNNdecoder(tf.random_normal(
             #         [batch_size, hidden_size]))
 
-        vae_loss = self.__get_vae_cost(mean, stddev)
+        vae_loss = self.__get_vae_cost(mean, stddev) # one to minimize the kl divergence
         rec_loss = self.__get_reconstruction_cost(
-            output_tensor, label_data)
-
+            output_tensor, label_data) # the other is to maximize the log likelihood
+        # TODO
         loss = vae_loss + rec_loss
         self.train = layers.optimize_loss(loss, global_step=global_step, learning_rate=tf.constant(self.lr), optimizer='Adam')#, update_ops=[])
 
@@ -163,6 +166,8 @@ class VAE(Generator):
             target_tensor: the target tensor that we want to reconstruct
             epsilon:
         '''
+        # TODO: why not mse
+        # tf.squared_difference or tf.losses.mean_squared_error
         return tf.reduce_sum(tf.square(target_tensor-output_tensor))
 
     def update_params(self, input_tensor):
@@ -194,6 +199,7 @@ class VAE(Generator):
                 # loc_map: tensor (3,3,features)
                 # feature = n-vector
                 # label = ( batch_size, time_step(8), num_of_drugs(69) )
+                # TODO
                 loss_value = self.update_params(input_and_label)
 
                 training_loss += loss_value
@@ -230,13 +236,13 @@ def main():
 
     FLAGS = flags.FLAGS
 
-    if __name__ == "__main__":
-        data_path = "../test2.csv"
+    # if __name__ == "__main__":
+    data_path = "../test2.csv"
 
-        # mnist = input_data.read_data_sets(data_directory, one_hot=True)
+    # mnist = input_data.read_data_sets(data_directory, one_hot=True)
 
-        model = VAE(FLAGS.hidden_size, FLAGS.batch_size, FLAGS.learning_rate)
-        model.train_model(FLAGS,data_path)
+    model = VAE(FLAGS.hidden_size, FLAGS.batch_size, FLAGS.learning_rate)
+    model.train_model(FLAGS,data_path)
 
 
 
@@ -244,4 +250,5 @@ def main():
             # model.generate_and_save_images(
             #     FLAGS.batch_size, FLAGS.working_directory)
 
-main()
+if __name__ == '__main__':
+    main()

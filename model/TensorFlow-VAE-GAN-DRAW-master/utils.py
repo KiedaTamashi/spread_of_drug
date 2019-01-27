@@ -13,13 +13,24 @@ def encoder(input_tensor, output_size,feature_vector_lens=2):
         A tensor that expresses the encoder network
     '''
     #TODO the figure is too small
+    # TODO: why is this reshape necessary
     net = tf.reshape(input_tensor, [-1, 3, 3, feature_vector_lens])
+    # TODO: I suggest writing in loop, e.g.
+    # ######################
+    # outs = (32,64,128)
+    # ks = (3,3,3)
+    # ss = (1,1,2)
+    # filters = zip(outs,ks,ss) # the above should be sent by function args
+    # for n_out,k,s in filters:
+    #     net = layers.conv2d(net, num_outputs=n_out, kernel_size=k, stride=s)
+    # ########################
     net = layers.conv2d(net, 32, 3, stride=1)
     net = layers.conv2d(net, 64, 3, stride=1)
+    # TODO I do not think stride=2 may make a difference, the shape is only 3x3
     net = layers.conv2d(net, 128, 3, stride=2, padding='VALID')
     net = layers.dropout(net, keep_prob=0.9)
-    net = layers.flatten(net)
-    return layers.fully_connected(net, output_size, activation_fn=None)
+    net = layers.flatten(net) # TODO mark the shape here
+    return layers.fully_connected(net, output_size, activation_fn=None) # TODO is there a reason why act is not used
 
 
 def discriminator(input_tensor):
@@ -62,10 +73,11 @@ def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16):
     # 'outputs' is a tensor of shape [batch_size, max_time, NUM_UNITS]
 
     #TODO not sure
-    net = tf.expand_dims(input_tensor, 1)
+    net = tf.expand_dims(input_tensor, 1) # b,1,h
     # net = tf.expand_dims(net, 1)
-    net = tf.tile(net,[1,8,1])
+    net = tf.tile(net,[1,8,1]) # b,8,h, TODO: remove hardcoded numbers
     rnn_cell = rnn.BasicLSTMCell(num_units=NUM_UNITS)
+    # TODO: is dynamic rnn necessary?
     outputs, final_state = tf.nn.dynamic_rnn(
         cell=rnn_cell,  # 选择传入的cell
         inputs=net,  # 传入的数据
@@ -73,7 +85,7 @@ def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16):
         dtype=tf.float32,  # 数据类型
         time_major=False,  # False: (batch, time step, input); True: (time step, batch, input)，这里根据image结构选择False
     )
-    #problem of dense?
+    # TODO: check the distribution
     output = tf.layers.dense(inputs=outputs, units=N_CLASSES)
     #output: [batchsize,num_of_years,num_of_drugs]
     return output
