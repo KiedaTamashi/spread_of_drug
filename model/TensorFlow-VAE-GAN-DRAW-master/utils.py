@@ -16,6 +16,14 @@ def encoder(input_tensor, output_size,feature_vector_lens=2):
     # TODO: why is this reshape necessary
     net = tf.reshape(input_tensor, [-1, 3, 3, feature_vector_lens])
     # TODO: I suggest writing in loop, e.g.
+    output_units = (32,64,128)
+    kernels = (3,3,3)
+    strides = (1,1,1)
+    paddings = ('SAME','SAME','VALID')
+    filters = zip(output_units,kernels,strides,paddings)
+    for n_out,k,s,p in filters:
+        net = layers.conv2d(net,n_out,k,stride=s,padding=p)
+
     # ######################
     # outs = (32,64,128)
     # ks = (3,3,3)
@@ -24,12 +32,12 @@ def encoder(input_tensor, output_size,feature_vector_lens=2):
     # for n_out,k,s in filters:
     #     net = layers.conv2d(net, num_outputs=n_out, kernel_size=k, stride=s)
     # ########################
-    net = layers.conv2d(net, 32, 3, stride=1)
-    net = layers.conv2d(net, 64, 3, stride=1)
-    # TODO I do not think stride=2 may make a difference, the shape is only 3x3
-    net = layers.conv2d(net, 128, 3, stride=2, padding='VALID') # h=w=3, b,1,1,128
+    # net = layers.conv2d(net, 32, 3, stride=1)
+    # net = layers.conv2d(net, 64, 3, stride=1)
+    # # TODO I do not think stride=2 may make a difference, the shape is only 3x3
+    # net = layers.conv2d(net, 128, 3, stride=1, padding='VALID') # h=w=3, b,1,1,128
     net = layers.dropout(net, keep_prob=0.9)
-    net = layers.flatten(net) # TODO mark the shape here
+    net = layers.flatten(net) # b,128
     return layers.fully_connected(net, output_size, activation_fn=None) # TODO is there a reason why act is not used
 
 
@@ -68,14 +76,14 @@ def decoder(input_tensor):
     net = layers.flatten(net)
     return net
 
-def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16):
+def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16,len_of_year = 8):
     # input_tensor: a batch of vectors to decode
     # 'outputs' is a tensor of shape [batch_size, max_time, NUM_UNITS]
 
     #TODO not sure
     net = tf.expand_dims(input_tensor, 1) # b,1,h
     # net = tf.expand_dims(net, 1)
-    net = tf.tile(net,[1,8,1]) # b,8,h, TODO: remove hardcoded numbers
+    net = tf.tile(net,[1,len_of_year,1]) # b,8,h, TODO: remove hardcoded numbers
     rnn_cell = rnn.BasicLSTMCell(num_units=NUM_UNITS)
     # TODO: is dynamic rnn necessary?
     outputs, final_state = tf.nn.dynamic_rnn(
@@ -83,7 +91,7 @@ def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16):
         inputs=net,  # 传入的数据
         initial_state=None,  # 初始状态
         dtype=tf.float32,  # 数据类型
-        time_major=False,  # False: (batch, time step, input); True: (time step, batch, input)，这里根据image结构选择False
+        time_major=False,  # False: (batch, time_step, input); True: (time step, batch, input)，这里根据image结构选择False
     )
     # TODO: check the distribution
 
