@@ -7,7 +7,7 @@ def encoder(input_tensor, output_size,feature_vector_lens=2):
     '''Create encoder network.
 
     Args:
-        input_tensor: a batch of flattened images [batch_size, 3,3,feature_vector]
+        input_tensor: a batch of flattened images [batch_size, 3,3,feature_vector] b,h,w,c
 
     Returns:
         A tensor that expresses the encoder network
@@ -27,7 +27,7 @@ def encoder(input_tensor, output_size,feature_vector_lens=2):
     net = layers.conv2d(net, 32, 3, stride=1)
     net = layers.conv2d(net, 64, 3, stride=1)
     # TODO I do not think stride=2 may make a difference, the shape is only 3x3
-    net = layers.conv2d(net, 128, 3, stride=2, padding='VALID')
+    net = layers.conv2d(net, 128, 3, stride=2, padding='VALID') # h=w=3, b,1,1,128
     net = layers.dropout(net, keep_prob=0.9)
     net = layers.flatten(net) # TODO mark the shape here
     return layers.fully_connected(net, output_size, activation_fn=None) # TODO is there a reason why act is not used
@@ -86,6 +86,9 @@ def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16):
         time_major=False,  # False: (batch, time step, input); True: (time step, batch, input)，这里根据image结构选择False
     )
     # TODO: check the distribution
+
     output = tf.layers.dense(inputs=outputs, units=N_CLASSES)
+    tf.summary.histogram('output', output)
+    # tf.summary.histogram('target', )
     #output: [batchsize,num_of_years,num_of_drugs]
     return output

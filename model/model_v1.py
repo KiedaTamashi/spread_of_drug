@@ -168,6 +168,7 @@ class VAE(Generator):
         '''
         # TODO: why not mse
         # tf.squared_difference or tf.losses.mean_squared_error
+        # tf.reduce_mean
         return tf.reduce_sum(tf.square(target_tensor-output_tensor))
 
     def update_params(self, input_tensor):
@@ -185,8 +186,9 @@ class VAE(Generator):
         saver = tf.train.Saver(max_to_keep=5)
         for epoch in range(FLAGS.max_epoch):
             training_loss = 0.0
-            inputs_and_labels = data_preprocess(load_data(datapath))
+            inputs_and_labels = data_preprocess(load_data(datapath)) # (n_samples, 3,3,2),(n_samples,t,n_classes)
             num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
+            # TODO shuffle data
             for i in range(num_of_data):
                 if (i + 1) * FLAGS.batch_size < inputs_and_labels[0].shape[0]:
                     inputs, labels = inputs_and_labels
@@ -199,10 +201,10 @@ class VAE(Generator):
                 # loc_map: tensor (3,3,features)
                 # feature = n-vector
                 # label = ( batch_size, time_step(8), num_of_drugs(69) )
-                # TODO
-                loss_value = self.update_params(input_and_label)
+                    # TODO
+                    loss_value = self.update_params(input_and_label)
 
-                training_loss += loss_value
+                    training_loss += loss_value
 
             training_loss = training_loss / (FLAGS.updates_per_epoch * FLAGS.batch_size)
             # TODO model_save + validation + extra
