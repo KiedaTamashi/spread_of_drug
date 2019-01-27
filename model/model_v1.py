@@ -86,19 +86,40 @@ def data_preprocess(data,timestep=8):
 
     return rnn_total
 
-def shuffle_data(rnn_total):
-    rnn_label = []
-    rnn_data = []
+def shuffle_and_transform(rnn_total,mode):
+    if mode == "train":
+        rnn_label = []
+        rnn_data = []
+        #TODO rewrite input way
+        rnn_train = rnn_total[:450]
 
-    random.shuffle(rnn_total)
-    for item in rnn_total:
-        rnn_data.append(item[0])
-        rnn_label.append(item[1])
-   # (n, 3, 3, 2) + (n, 8, 69)
-    return np.array(rnn_data,dtype=np.float32),np.array(rnn_label,dtype=np.float32)
+        random.shuffle(rnn_train)
 
-
-
+        for item in rnn_train:
+            rnn_data.append(item[0])
+            rnn_label.append(item[1])
+       # (n, 3, 3, 2) + (n, 8, 69)
+        inputs,labels= np.array(rnn_data,dtype=np.float32),np.array(rnn_label,dtype=np.float32)
+        max_label = labels.max()
+        min_label = labels.min()
+        mean_label = labels.mean()
+        labels = (labels-mean_label)/(max_label-min_label)
+        inputs_and_labels_train = inputs,labels
+        return inputs_and_labels_train,(max_label,min_label,mean_label)
+    elif mode =="val":
+        rnn_label = []
+        rnn_data = []
+        rnn_val = rnn_total[450:]
+        for item in rnn_val:
+            rnn_data.append(item[0])
+            rnn_label.append(item[1])
+        inputs, labels = np.array(rnn_data, dtype=np.float32), np.array(rnn_label, dtype=np.float32)
+        max_label = labels.max()
+        min_label = labels.min()
+        mean_label = labels.mean()
+        labels = (labels - mean_label) / (max_label - min_label)
+        inputs_and_labels_val = inputs, labels
+        return inputs_and_labels_val, (max_label, min_label, mean_label)
 
 
 
@@ -106,21 +127,42 @@ class VAE(Generator):
 
 
 
-    def __init__(self, hidden_size, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate=0.001,batch_size=1):
+    def __init__(self, HIDDEN_SIZE, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate=0.001,batch_size=1):
         # TODO: modify the hardcoded numbers
         self.hwc_input = HWC_INPUT
         self.years = LEN_OF_YEAR
         self.n_classes = NUM_OF_CLASSES
         self.num_rnn_units = 16
         self.restore_model = True
-
+        self.hidden_size = HIDDEN_SIZE
         self.input_tensor = (tf.placeholder(tf.float32, [batch_size, self.hwc_input[0]*self.hwc_input[1],self.hwc_input[2]]),
                              tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]))
 
         # self.label_tensor = tf.placeholder(tf.float32, [None, 8, 69])
         self.lr = learning_rate
+        output_tensor, label_data, mean,stddev = self.model_establish()
 
-        #
+        vae_loss = self.__get_vae_cost(mean, stddev)  # one to minimize the kl divergence
+        rec_loss = self.__get_reconstruction_cost(
+            output_tensor, label_data)  # the other is to maximize the log likelihood
+        # TODO
+        loss = vae_loss + rec_loss
+        self.loss = loss
+                # [batchsize,num_of_years,num_of_drugs]
+
+                # output_tensor = decoder(input_sample)
+
+            # with tf.variable_scope("model", reuse=True) as scope:
+            #     self.sampled_tensor = RNNdecoder(tf.random_normal(
+            #         [batch_size, hidden_size]))
+        self.train = layers.optimize_loss(loss, global_step=self.global_step, learning_rate=tf.constant(self.lr), optimizer='Adam')#, update_ops=[])
+        config = tf.ConfigProto()
+        config.gpu_options.allow_growth = True
+        self.sess=tf.Session(config=config)
+
+        self.sess.run(tf.global_variables_initializer())
+
+    def model_establish(self):
         with arg_scope([layers.conv2d, layers.conv2d_transpose],
                        activation_fn=tf.nn.elu,
                        normalizer_fn=layers.batch_norm,
@@ -132,13 +174,13 @@ class VAE(Generator):
                 input_data,label_data = self.input_tensor
                 # label_data = self.label_tensor
                 # why is hiddensize timed by 2, get it: outputing mu & sigma, each length hidden_size
-                encoded = encoder(input_data, hidden_size * 2)
+                encoded = encoder(input_data, self.hidden_size * 2)
                 tf.summary.histogram("encoded",encoded)
                 #encoded is a tensor
-                mean = encoded[:, :hidden_size] # mu
-                stddev = tf.sqrt(tf.exp(encoded[:, hidden_size:])) # sigma
+                mean = encoded[:, :self.hidden_size] # mu
+                stddev = tf.sqrt(tf.exp(encoded[:, self.hidden_size:])) # sigma
 
-                epsilon = tf.random_normal([tf.shape(mean)[0], hidden_size])
+                epsilon = tf.random_normal([tf.shape(mean)[0], self.hidden_size])
                 input_sample = mean + epsilon * stddev # shape? b,h
                 # TODO add location to do feature confusion with input_sample
                 #  input (?,64)
@@ -146,25 +188,9 @@ class VAE(Generator):
                 # TODO: explicityly pass in the params here
                 output_tensor = RNNdecoder(tf.reshape(input_sample,[-1,input_sample.shape[-1]]),N_CLASSES=self.n_classes,
                                            NUM_UNITS=self.num_rnn_units,len_of_year=self.years) # TODO why is the reshape necessary
-                # [batchsize,num_of_years,num_of_drugs]
+                self.output = output_tensor
 
-                # output_tensor = decoder(input_sample)
-
-            # with tf.variable_scope("model", reuse=True) as scope:
-            #     self.sampled_tensor = RNNdecoder(tf.random_normal(
-            #         [batch_size, hidden_size]))
-
-        vae_loss = self.__get_vae_cost(mean, stddev) # one to minimize the kl divergence
-        rec_loss = self.__get_reconstruction_cost(
-            output_tensor, label_data) # the other is to maximize the log likelihood
-        # TODO
-        loss = vae_loss + rec_loss
-        self.train = layers.optimize_loss(loss, global_step=global_step, learning_rate=tf.constant(self.lr), optimizer='Adam')#, update_ops=[])
-        config = tf.ConfigProto()
-        config.gpu_options.allow_growth = True
-        self.sess=tf.Session(config=config)
-
-        self.sess.run(tf.global_variables_initializer())
+        return output_tensor, label_data, mean, stddev
 
     def __get_vae_cost(self, mean, stddev, epsilon=1e-8):
         '''VAE loss
@@ -216,15 +242,7 @@ class VAE(Generator):
         for epoch in range(FLAGS.max_epoch):
             #shuffle
             # already shuffled in data_preprocess
-            inputs,labels = shuffle_data(inputs_and_labels_origin)
-            max_label = labels.max()
-            min_label = labels.min()
-            mean_label = labels.mean()
-            labels = (labels-mean_label)/(max_label-min_label)
-
-            inputs_and_labels = (inputs,labels)
-
-
+            inputs_and_labels, _= shuffle_and_transform(inputs_and_labels_origin,"train")
             training_loss = 0.0
              # (n_samples, 3,3,2),(n_samples,t,n_classes)
             num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
@@ -237,7 +255,7 @@ class VAE(Generator):
                     inputs, labels = inputs_and_labels
 
                     input_and_label = (np.reshape(inputs[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :, :],
-                                                  (FLAGS.batch_size, 3 * 3, -1)),
+                                                  (FLAGS.batch_size, self.hwc_input[0] * self.hwc_input[1], -1)),
                                        labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :])
                 # input_and_label = input,label
                 # input = (batch_size, loc_map)
@@ -258,8 +276,36 @@ class VAE(Generator):
 
         saver.save(self.sess,"./save/my-model-final",global_step=self.global_step)
 
-    def validation_model(self):
-        pass
+    def validation_model(self,datapath,model_path):
+        saver = tf.train.Saver()
+        saver.restore(self.sess, model_path)
+        # read data:
+        inputs_and_labels_origin = data_preprocess(load_data(datapath))
+        validation_loss = 0.0
+        #size_msg = max,min,mean , to get real output
+        inputs_and_labels, size_msg = shuffle_and_transform(inputs_and_labels_origin,mode="val")
+        # (n_samples, 3,3,2),(n_samples,t,n_classes)
+        num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
+
+        # num_of_data/batch_size
+
+        for i in range(num_of_data):
+
+            inputs, labels = inputs_and_labels
+
+            input_and_label = (np.reshape(inputs[i:i+1, :, :, :],
+                                          (1, self.hwc_input[0] * self.hwc_input[1], -1)),
+                               labels[i:(i + 1), :, :])
+
+            output = self.sess.run(self.output,{self.input_tensor:input_and_label})
+            output = output*(size_msg[0]-size_msg[1])+size_msg[2]
+            print(output.max())
+            loss_value = self.sess.run(self.loss,{self.input_tensor:input_and_label})
+
+            validation_loss += loss_value
+        validation_loss/=num_of_data
+        print("validation_loss: ",validation_loss)
+
 
 
 def read_next(inputs_and_labels,id,batch_size):
@@ -276,8 +322,8 @@ def read_next(inputs_and_labels,id,batch_size):
 def main():
     flags = tf.flags
 
-    flags.DEFINE_integer("batch_size", 4, "batch size")
-    flags.DEFINE_integer("max_epoch", 200, "max epoch")
+    flags.DEFINE_integer("batch_size", 1, "batch size")
+    flags.DEFINE_integer("max_epoch", 100, "max epoch")
     flags.DEFINE_float("learning_rate", 0.01, "learning rate")
     flags.DEFINE_integer("hidden_size", 64, "size of the hidden VAE unit")
     flags.DEFINE_integer("drug_num",69,"num_of_drug_classes")
@@ -288,10 +334,15 @@ def main():
     data_path = "../test2.csv"
     hwc_input = (3, 3, 2)
     len_of_years = 8
+    opt = "val"
+    model_path= "./save/my-model-final-58061"
     # mnist = input_data.read_data_sets(data_directory, one_hot=True)
     # params: hidden_size, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate,batch_size
     model = VAE(FLAGS.hidden_size, len_of_years, FLAGS.drug_num,hwc_input, FLAGS.learning_rate,FLAGS.batch_size)
-    model.train_model(FLAGS,data_path)
+    if opt == "train":
+        model.train_model(FLAGS,data_path)
+    else:
+        model.validation_model(data_path,model_path)
 
     # origin_data = load_data("../test2.csv")
     # input_data,input_label = data_preprocess(origin_data)
