@@ -76,14 +76,20 @@ def decoder(input_tensor):
     net = layers.flatten(net)
     return net
 
-def RNNdecoder(input_tensor,N_CLASSES=69,NUM_UNITS=16,len_of_year = 8):
+def RNNdecoder(input_tensor,output_tensor_last,N_CLASSES=69,NUM_UNITS=16,len_of_year = 8):
     # input_tensor: a batch of vectors to decode
+    # output_tensor_last: b,len_of_year,n_classes
+    # len_of_year should be the time-length processed now
     # 'outputs' is a tensor of shape [batch_size, max_time, NUM_UNITS]
 
     #TODO not sure
     net = tf.expand_dims(input_tensor, 1) # b,1,h
+    # feature fusion
+    output_tensor_last = layers.fully_connected(output_tensor_last, int(input_tensor.shape[-1])) # to b,t,h
+    net = tf.tile(net, [1, len_of_year, 1])  # b,t,h
+    net = tf.concat([net,output_tensor_last],axis=-1)
     # net = tf.expand_dims(net, 1)
-    net = tf.tile(net,[1,len_of_year,1]) # b,8,h, TODO: remove hardcoded numbers
+
     rnn_cell = rnn.BasicLSTMCell(num_units=NUM_UNITS)
     # TODO: is dynamic rnn necessary?
     outputs, final_state = tf.nn.dynamic_rnn(

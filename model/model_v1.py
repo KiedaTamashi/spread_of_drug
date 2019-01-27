@@ -128,15 +128,15 @@ class VAE(Generator):
 
 
     def __init__(self, HIDDEN_SIZE, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate=0.001,batch_size=1):
-        # TODO: modify the hardcoded numbers
         self.hwc_input = HWC_INPUT
         self.years = LEN_OF_YEAR
         self.n_classes = NUM_OF_CLASSES
         self.num_rnn_units = 16
-        self.restore_model = True
+        self.restore_model = False
         self.hidden_size = HIDDEN_SIZE
         self.input_tensor = (tf.placeholder(tf.float32, [batch_size, self.hwc_input[0]*self.hwc_input[1],self.hwc_input[2]]),
-                             tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]))
+                             tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
+                             tf.placeholder(tf.float32,[batch_size,self.years,self.n_classes]))
 
         # self.label_tensor = tf.placeholder(tf.float32, [None, 8, 69])
         self.lr = learning_rate
@@ -170,8 +170,9 @@ class VAE(Generator):
             with tf.variable_scope("model") as scope:
                 global_step = tf.Variable(0, trainable=False)
                 self.global_step = global_step
-                #input_[tensor batch_size, num_of_location ,2]
-                input_data,label_data = self.input_tensor
+                #input_[b, h*w ,c],label [b,t,n_classes]
+                input_data,label_data,label_data_last = self.input_tensor
+
                 # label_data = self.label_tensor
                 # why is hiddensize timed by 2, get it: outputing mu & sigma, each length hidden_size
                 encoded = encoder(input_data, self.hidden_size * 2)
@@ -183,10 +184,13 @@ class VAE(Generator):
                 epsilon = tf.random_normal([tf.shape(mean)[0], self.hidden_size])
                 input_sample = mean + epsilon * stddev # shape? b,h
                 # TODO add location to do feature confusion with input_sample
-                #  input (?,64)
+                #  input (b,64)
                 tf.summary.histogram("input_sample",input_sample)
                 # TODO: explicityly pass in the params here
-                output_tensor = RNNdecoder(tf.reshape(input_sample,[-1,input_sample.shape[-1]]),N_CLASSES=self.n_classes,
+                # make fusion of z and time
+
+
+                output_tensor = RNNdecoder(input_sample,label_data_last,N_CLASSES=self.n_classes,
                                            NUM_UNITS=self.num_rnn_units,len_of_year=self.years) # TODO why is the reshape necessary
                 self.output = output_tensor
 
@@ -252,11 +256,16 @@ class VAE(Generator):
             print(num_of_batch)
             for i in range(num_of_data):
                 if (i + 1) * FLAGS.batch_size < num_of_data:
+                    # now the labels are arbitary time-length
                     inputs, labels = inputs_and_labels
-
+                    label_last_time = deepcopy(labels)
+                    # create its last-year label
+                    label_last_time[:,1:,:] = label_last_time[:,:-1,:]
+                    label_last_time[:,0,:] = 0.0
                     input_and_label = (np.reshape(inputs[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :, :],
                                                   (FLAGS.batch_size, self.hwc_input[0] * self.hwc_input[1], -1)),
-                                       labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :])
+                                       labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :],
+                                       label_last_time[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :])
                 # input_and_label = input,label
                 # input = (batch_size, loc_map)
                 # loc_map: tensor (3,3,features)
@@ -269,17 +278,19 @@ class VAE(Generator):
                 else:
                     break
             training_loss = training_loss / (num_of_batch * FLAGS.batch_size)
-            # TODO model_save + validation + extra
+            # TODO validation + extra
             print("Epoch{} : Loss {}".format(epoch,training_loss))
             if epoch %30 ==0:
                 saver.save(self.sess,"./save/my-model",global_step=self.global_step)
+            # self.validation_model(datapath)
+
 
         saver.save(self.sess,"./save/my-model-final",global_step=self.global_step)
 
     def validation_model(self,datapath,model_path):
         saver = tf.train.Saver()
         saver.restore(self.sess, model_path)
-        # read data:
+
         inputs_and_labels_origin = data_preprocess(load_data(datapath))
         validation_loss = 0.0
         #size_msg = max,min,mean , to get real output
@@ -299,7 +310,8 @@ class VAE(Generator):
 
             output = self.sess.run(self.output,{self.input_tensor:input_and_label})
             output = output*(size_msg[0]-size_msg[1])+size_msg[2]
-            print(output.max())
+            # TODO the output is quite strange
+            # print(output.max())
             loss_value = self.sess.run(self.loss,{self.input_tensor:input_and_label})
 
             validation_loss += loss_value
@@ -322,7 +334,7 @@ def read_next(inputs_and_labels,id,batch_size):
 def main():
     flags = tf.flags
 
-    flags.DEFINE_integer("batch_size", 1, "batch size")
+    flags.DEFINE_integer("batch_size", 4, "batch size")
     flags.DEFINE_integer("max_epoch", 100, "max epoch")
     flags.DEFINE_float("learning_rate", 0.01, "learning rate")
     flags.DEFINE_integer("hidden_size", 64, "size of the hidden VAE unit")
@@ -334,7 +346,7 @@ def main():
     data_path = "../test2.csv"
     hwc_input = (3, 3, 2)
     len_of_years = 8
-    opt = "val"
+    opt = "train"
     model_path= "./save/my-model-final-58061"
     # mnist = input_data.read_data_sets(data_directory, one_hot=True)
     # params: hidden_size, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate,batch_size
