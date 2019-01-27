@@ -212,10 +212,19 @@ class VAE(Generator):
 
         inputs_and_labels_origin = data_preprocess(load_data(datapath))
 
+
         for epoch in range(FLAGS.max_epoch):
             #shuffle
             # already shuffled in data_preprocess
-            inputs_and_labels = shuffle_data(inputs_and_labels_origin)
+            inputs,labels = shuffle_data(inputs_and_labels_origin)
+            max_label = labels.max()
+            min_label = labels.min()
+            mean_label = labels.mean()
+            labels = (labels-mean_label)/(max_label-min_label)
+
+            inputs_and_labels = (inputs,labels)
+
+
             training_loss = 0.0
              # (n_samples, 3,3,2),(n_samples,t,n_classes)
             num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
@@ -244,11 +253,13 @@ class VAE(Generator):
             training_loss = training_loss / (num_of_batch * FLAGS.batch_size)
             # TODO model_save + validation + extra
             print("Epoch{} : Loss {}".format(epoch,training_loss))
-        #     if epoch %50 ==0:
-        #         saver.save(self.sess,"./save/my-model",global_step=self.global_step)
-        #
-        # saver.save(self.sess,"./save/my-model-final",global_step=self.global_step)
+            if epoch %30 ==0:
+                saver.save(self.sess,"./save/my-model",global_step=self.global_step)
 
+        saver.save(self.sess,"./save/my-model-final",global_step=self.global_step)
+
+    def validation_model(self):
+        pass
 
 
 def read_next(inputs_and_labels,id,batch_size):
