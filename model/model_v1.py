@@ -14,7 +14,8 @@ from copy import deepcopy
 from progressbar import ProgressBar
 import os
 import random
-
+from sklearn.metrics import r2_score
+import time
 #10-17, time step = 8
 
 def gen_loc_map(loc_data,idx):
@@ -26,10 +27,10 @@ def gen_loc_map(loc_data,idx):
     x_now, y_now = i[0],i[1]
     north_list_x, south_list_x = deepcopy(loc_data[:,0]),deepcopy(loc_data[:,0])
     west_list_y, east_list_y = deepcopy(loc_data[:,1]),deepcopy(loc_data[:,1])
-    south_list_x[south_list_x>x_now] = 0
-    north_list_x[north_list_x<x_now] += north_list_x.max()
-    west_list_y[west_list_y < y_now] += west_list_y.max()
-    east_list_y[east_list_y > y_now] = 0
+    south_list_x[south_list_x>=x_now] = 0
+    north_list_x[north_list_x<=x_now] += north_list_x.max()
+    west_list_y[west_list_y <= y_now] += west_list_y.max()
+    east_list_y[east_list_y >= y_now] = 0
     south = np.where(south_list_x==south_list_x.max())[0][0]
     north = np.where(north_list_x==north_list_x.min())[0][0]
     west =np.where(west_list_y==west_list_y.min())[0][0]
@@ -77,17 +78,30 @@ def data_preprocess(data,timestep=8):
     rnn_total = []
 
     i=0
+
+    def foo(t):
+        x = np.ones((t, 69))
+        x = np.pad(x, pad_width=((0, 8 - t), (0, 0)), mode='constant')
+        return x # 8,69
+
     while i<= (input_.shape[0]-timestep):
         data=(gen_loc_map(input_,i))
-        label=np.array([x for x in label_[i:(i+timestep),:]])
-        mask = deepcopy(label)
-        mask[:,:] = 0
-        for j in range(timestep):
-            k=j+1
-            while k<=timestep:
-                mask[j:k,:] = 1
-                rnn_total.append((data, label, mask))
-                k+=1
+        base_label=np.array([x for x in label_[i:(i+timestep),:]]) # 8,69
+        for t in range(2,timestep):
+            mask = foo(t)
+            for idx in range(0,timestep-t):
+                label = base_label[idx:idx+t] # t,69
+                label = np.pad(label, pad_width=((0,8-t),(0,0)), mode='constant')
+                rnn_total.append((data,label,mask))
+
+            # k=j+1
+            # while k<=timestep:
+            #
+            #     mask = deepcopy(label)
+            #     mask[:, :] = 0
+            #     mask[j:k,:] = 1
+            #     rnn_total.append((data, label, mask))
+            #     k+=1
 
         # rnn_total.append((data,label))
         i+=timestep
@@ -95,7 +109,7 @@ def data_preprocess(data,timestep=8):
 
     return rnn_total
 
-def shuffle_and_transform(rnn_total,mode,num_data=11000):
+def shuffle_and_transform(rnn_total,mode,num_data=10000):
     if mode == "train":
         rnn_label = []
         rnn_data = []
@@ -111,25 +125,28 @@ def shuffle_and_transform(rnn_total,mode,num_data=11000):
             rnn_mask.append(item[2])
         inputs, labels, masks = np.array(rnn_data, dtype=np.float32), np.array(rnn_label, dtype=np.float32),\
                                 np.array(rnn_mask, dtype=np.float32)
-        max_label = labels.max()
-        min_label = labels.min()
-        mean_label = labels.mean()
-        labels = (labels - mean_label) / (max_label - min_label)
+        max_label = labels.max(axis=0)
+        min_label = labels.min(axis=0)
+        mean_label = labels.mean(axis=0)
+        labels = (labels - mean_label) / (max_label - min_label+1e-4)
         inputs_and_labels_train = inputs,labels,masks
         return inputs_and_labels_train,(max_label,min_label,mean_label)
     elif mode =="val":
         rnn_label = []
         rnn_data = []
-        rnn_val = rnn_total[-500:]
+        rnn_mask = []
+        rnn_val = rnn_total[-400:]
         for item in rnn_val:
             rnn_data.append(item[0])
             rnn_label.append(item[1])
-        inputs, labels = np.array(rnn_data, dtype=np.float32), np.array(rnn_label, dtype=np.float32)
+            rnn_mask.append(item[2])
+        inputs, labels, masks = np.array(rnn_data, dtype=np.float32), np.array(rnn_label, dtype=np.float32),\
+                                np.array(rnn_mask, dtype=np.float32)
         max_label = labels.max()
         min_label = labels.min()
         mean_label = labels.mean()
         labels = (labels - mean_label) / (max_label - min_label)
-        inputs_and_labels_val = inputs, labels
+        inputs_and_labels_val = inputs, labels ,masks
         return inputs_and_labels_val, (max_label, min_label, mean_label)
 
 
@@ -152,14 +169,25 @@ class VAE(Generator):
 
         # self.label_tensor = tf.placeholder(tf.float32, [None, 8, 69])
         self.lr = learning_rate
+
+
         output_tensor, label_data, mean,stddev = self.model_establish()
 
-        vae_loss = self.__get_vae_cost(mean, stddev)  # one to minimize the kl divergence
+        self.vae = vae_loss = self.__get_vae_cost(mean, stddev)  # one to minimize the kl divergence
         rec_loss = self.__get_reconstruction_cost(
-            output_tensor, label_data)  # the other is to maximize the log likelihood
+            output_tensor, label_data, self.mask)  # the other is to maximize the log likelihood
+        v = tf.reduce_sum(tf.square(label_data-tf.reduce_mean(label_data)))
+        self.r_square = 1 - rec_loss/v
+
+
         # TODO
         loss = vae_loss + rec_loss
         self.loss = loss
+
+        tf.summary.scalar('loss', loss)
+
+        self.merged = tf.summary.merge_all()
+
                 # [batchsize,num_of_years,num_of_drugs]
 
                 # output_tensor = decoder(input_sample)
@@ -184,7 +212,8 @@ class VAE(Generator):
                 self.global_step = global_step
                 #input_[b, h*w ,c],label [b,t,n_classes]
                 input_data,label_data,label_mask,label_data_last = self.input_tensor
-
+                self.mask = label_mask
+                tf.summary.histogram("target",label_data)
                 # label_data = self.label_tensor
                 # why is hiddensize timed by 2, get it: outputing mu & sigma, each length hidden_size
                 encoded = encoder(input_data, self.hidden_size * 2)
@@ -197,16 +226,17 @@ class VAE(Generator):
                 input_sample = mean + epsilon * stddev # shape? b,h
                 # TODO add location to do feature confusion with input_sample
                 #  input (b,64)
-                tf.summary.histogram("input_sample",input_sample)
+                tf.summary.histogram("z",input_sample)
                 # TODO: explicityly pass in the params here
                 # make fusion of z and time
 
-
-                output_tensor = RNNdecoder(input_sample,label_data_last*label_mask,N_CLASSES=self.n_classes,
+                # loss = tf.multiply(label_data_last,label_mask)
+                output_tensor = RNNdecoder(input_sample,label_data_last,N_CLASSES=self.n_classes,
                                            NUM_UNITS=self.num_rnn_units,len_of_year=self.years) # TODO why is the reshape necessary
                 self.output = output_tensor
 
-        return output_tensor, label_data*label_mask, mean, stddev
+
+        return output_tensor, label_data, mean, stddev
 
     def __get_vae_cost(self, mean, stddev, epsilon=1e-8):
         '''VAE loss
@@ -220,7 +250,7 @@ class VAE(Generator):
         return tf.reduce_sum(0.5 * (tf.square(mean) + tf.square(stddev) -
                                     2.0 * tf.log(stddev + epsilon) - 1.0))
 
-    def __get_reconstruction_cost(self, output_tensor, target_tensor, epsilon=1e-8):
+    def __get_reconstruction_cost(self, output_tensor, target_tensor, mask, epsilon=1e-8):
         '''Reconstruction loss
 
         Cross entropy reconstruction loss
@@ -233,7 +263,7 @@ class VAE(Generator):
         # TODO: why not mse
         # tf.squared_difference or tf.losses.mean_squared_error
         # tf.reduce_mean
-        return tf.reduce_sum(tf.square(target_tensor-output_tensor))
+        return tf.reduce_mean(tf.multiply(mask, tf.squared_difference(output_tensor,target_tensor)))
 
     def update_params(self, input_tensor):
         '''Update parameters of the network
@@ -244,7 +274,7 @@ class VAE(Generator):
         Returns:
             Current loss value
         '''
-        return self.sess.run(self.train, {self.input_tensor: input_tensor})
+        return self.sess.run([self.train,self.merged, self.global_step, self.vae], {self.input_tensor: input_tensor})
 
     def train_model(self,FLAGS,datapath):
         saver = tf.train.Saver(max_to_keep=5)
@@ -253,12 +283,17 @@ class VAE(Generator):
             saver.restore(self.sess, "./save/my-model-23511")
 
         inputs_and_labels_origin = data_preprocess(load_data(datapath))
+        log_path = "./log_{}".format(time.strftime("%d%H%M%S"))
+        print(log_path)
+        os.makedirs(log_path,exist_ok=True)
+        train_writer = tf.summary.FileWriter(log_path)
 
+        train_writer.add_graph(tf.get_default_graph())
 
         for epoch in range(FLAGS.max_epoch):
             #shuffle
             # already shuffled in data_preprocess
-            inputs_and_labels, _= shuffle_and_transform(inputs_and_labels_origin,"train")
+            inputs_and_labels, _ = shuffle_and_transform(inputs_and_labels_origin,"train")
             training_loss = 0.0
              # (n_samples, 3,3,2),(n_samples,t,n_classes)
             num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
@@ -284,9 +319,13 @@ class VAE(Generator):
                 # loc_map: tensor (3,3,features)
                 # feature = n-vector
                 # label = ( batch_size, time_step(8), num_of_drugs(69) )
-                    #
-                    loss_value = self.update_params(input_and_label)
 
+                    ret = self.update_params(input_and_label)
+                    loss_value, summary, step, vaeloss = ret
+
+                    if step% 300 ==0:
+                        train_writer.add_summary(summary, global_step=step)
+                        print(f'{step}: {loss_value}, {vaeloss}')
                     training_loss += loss_value
                 else:
                     break
@@ -295,7 +334,7 @@ class VAE(Generator):
             print("Epoch{} : Loss {}".format(epoch,training_loss))
             if epoch % 5 ==0:
                 saver.save(self.sess,"./save/my-model",global_step=self.global_step)
-                self.validation_model(datapath,FLAGS)
+            self.validation_model(datapath,FLAGS)
 
 
         saver.save(self.sess,"./save/my-model-final",global_step=self.global_step)
@@ -306,16 +345,14 @@ class VAE(Generator):
 
         inputs_and_labels_origin = data_preprocess(load_data(datapath))
         validation_loss = 0.0
+        validation_r_square = 0.0
         #size_msg = max,min,mean , to get real output
         inputs_and_labels, size_msg = shuffle_and_transform(inputs_and_labels_origin,mode="val")
         # (n_samples, 3,3,2),(n_samples,t,n_classes)
         num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
-
-        # num_of_data/batch_size
         num_of_batch = math.floor(num_of_data / FLAGS.batch_size)
-        # print(num_of_batch)
-        # num_of_data/batch_size
-
+        # tf.reset_default_graph()# ?
+        print(num_of_batch)
         for i in range(num_of_data):
             if (i + 1) * FLAGS.batch_size < num_of_data:
                 # now the labels are arbitary time-length
@@ -330,16 +367,25 @@ class VAE(Generator):
                                    masks[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :],
                                    label_last_time[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :])
 
+                target = labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :] * masks[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :]
 
-            output = self.sess.run(self.output,{self.input_tensor:input_and_label})
-            output = output*(size_msg[0]-size_msg[1])+size_msg[2]
-            # TODO the output is quite strange
-            print("sample:  ",output[0])
-            loss_value = self.sess.run(self.loss,{self.input_tensor:input_and_label})
+                output,loss_value = self.sess.run([self.output,self.loss],{self.input_tensor:input_and_label})
+                # output = output*(size_msg[0]-size_msg[1]+1e-4)+size_msg[2]
+                # TODO the output is quite strange
+                # print("sample:  ",output[0])
 
-            validation_loss += loss_value
+                # r_square = 0.
+                # for j in range(FLAGS.batch_size):
+                #     r_square +=
+                # print(np.mean([r2_score(target[:,t],output[:,t]) for t in range(8)]), np.mean(np.abs(target-output)))
+                # print(r_square)
+                # validation_r_square += r_square
+                validation_loss += loss_value
         validation_loss/=(num_of_batch * FLAGS.batch_size)
+        # validation_r_square /= (num_of_batch * FLAGS.batch_size)
         print("validation_loss: ",validation_loss)
+        # print("validation_r_square: ",validation_r_square)
+        print("target-output: ",np.mean(target-output))
 
 
 
@@ -358,7 +404,7 @@ def main():
     flags = tf.flags
 
     flags.DEFINE_integer("batch_size", 4, "batch size")
-    flags.DEFINE_integer("max_epoch", 100, "max epoch")
+    flags.DEFINE_integer("max_epoch", 50, "max epoch")
     flags.DEFINE_float("learning_rate", 0.01, "learning rate")
     flags.DEFINE_integer("hidden_size", 64, "size of the hidden VAE unit")
     flags.DEFINE_integer("drug_num",69,"num_of_drug_classes")
