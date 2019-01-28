@@ -8,7 +8,7 @@ from tensorflow.contrib import layers
 from tensorflow.contrib import losses
 from tensorflow.contrib.framework import arg_scope
 from tensorflow.contrib.framework import get_global_step
-from utils import encoder, decoder,RNNdecoder
+from utils import encoder, decoder,RNNdecoder,RNNdecoder_inference
 from generator import Generator
 from copy import deepcopy
 from progressbar import ProgressBar
@@ -109,7 +109,7 @@ def data_preprocess(data,timestep=8):
 
     return rnn_total
 
-def shuffle_and_transform(rnn_total,mode,num_data=10000):
+def shuffle_and_transform(rnn_total,mode,num_data=10000,validation_data=-400,test_data=-100):
     if mode == "train":
         rnn_label = []
         rnn_data = []
@@ -135,7 +135,7 @@ def shuffle_and_transform(rnn_total,mode,num_data=10000):
         rnn_label = []
         rnn_data = []
         rnn_mask = []
-        rnn_val = rnn_total[-400:]
+        rnn_val = rnn_total[validation_data:test_data]
         for item in rnn_val:
             rnn_data.append(item[0])
             rnn_label.append(item[1])
@@ -148,24 +148,48 @@ def shuffle_and_transform(rnn_total,mode,num_data=10000):
         labels = (labels - mean_label) / (max_label - min_label)
         inputs_and_labels_val = inputs, labels ,masks
         return inputs_and_labels_val, (max_label, min_label, mean_label)
-
+    elif mode =="test":
+        rnn_label = []
+        rnn_data = []
+        rnn_mask = []
+        rnn_val = rnn_total[test_data:]
+        for item in rnn_val:
+            rnn_data.append(item[0])
+            rnn_label.append(item[1])
+            rnn_mask.append(item[2])
+        inputs, labels, masks = np.array(rnn_data, dtype=np.float32), np.array(rnn_label, dtype=np.float32), \
+                                np.array(rnn_mask, dtype=np.float32)
+        max_label = labels.max()
+        min_label = labels.min()
+        mean_label = labels.mean()
+        labels = (labels - mean_label) / (max_label - min_label)
+        inputs_and_labels_val = inputs, labels, masks
+        return inputs_and_labels_val, (max_label, min_label, mean_label)
 
 
 class VAE(Generator):
 
 
 
-    def __init__(self, HIDDEN_SIZE, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate=0.001,batch_size=1):
+    def __init__(self, HIDDEN_SIZE, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate=0.001,batch_size=1,MODE = "test"):
         self.hwc_input = HWC_INPUT
         self.years = LEN_OF_YEAR
         self.n_classes = NUM_OF_CLASSES
         self.num_rnn_units = 16
         self.restore_model = False
         self.hidden_size = HIDDEN_SIZE
-        self.input_tensor = (tf.placeholder(tf.float32, [batch_size, self.hwc_input[0]*self.hwc_input[1],self.hwc_input[2]]),
-                             tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
-                             tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
-                             tf.placeholder(tf.float32,[batch_size,self.years,self.n_classes]))
+        self.mode = MODE #or train
+        if self.mode == "train":
+            self.input_tensor = (tf.placeholder(tf.float32, [batch_size, self.hwc_input[0]*self.hwc_input[1],self.hwc_input[2]]),
+                                tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
+                                tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
+                                tf.placeholder(tf.float32,[batch_size,self.years,self.n_classes]))
+        elif self.mode == "test":
+            self.input_tensor = (
+            tf.placeholder(tf.float32, [batch_size, self.hwc_input[0] * self.hwc_input[1], self.hwc_input[2]]),
+            tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
+            tf.placeholder(tf.float32, [batch_size, self.years, self.n_classes]),
+            tf.placeholder(tf.float32, [None]))
 
         # self.label_tensor = tf.placeholder(tf.float32, [None, 8, 69])
         self.lr = learning_rate
@@ -231,8 +255,8 @@ class VAE(Generator):
                 # make fusion of z and time
 
                 # loss = tf.multiply(label_data_last,label_mask)
-                output_tensor = RNNdecoder(input_sample,label_data_last,N_CLASSES=self.n_classes,
-                                           NUM_UNITS=self.num_rnn_units,len_of_year=self.years) # TODO why is the reshape necessary
+                output_tensor = RNNdecoder_inference(input_sample,label_data_last,N_CLASSES=self.n_classes,
+                                           NUM_UNITS=self.num_rnn_units,len_of_year=self.years,mode=self.mode) # TODO why is the reshape necessary
                 self.output = output_tensor
 
 
@@ -387,6 +411,48 @@ class VAE(Generator):
         # print("validation_r_square: ",validation_r_square)
         print("target-output: ",np.mean(target-output))
 
+    def inference(self,datapath,FLAGS,model_path):
+        saver = tf.train.Saver()
+        saver.restore(self.sess, model_path)
+
+        inputs_and_labels_origin = data_preprocess(load_data(datapath))
+
+
+        # shuffle
+        # already shuffled in data_preprocess
+        inputs_and_labels, size_msg = shuffle_and_transform(inputs_and_labels_origin, "test")
+        test_loss = 0.0
+        # (n_samples, 3,3,2),(n_samples,t,n_classes)
+        num_of_data = inputs_and_labels[0].shape[0]  # num of location maps
+
+        # num_of_data/batch_size
+        num_of_batch = math.floor(num_of_data / FLAGS.batch_size)
+        for i in range(num_of_data):
+            if (i + 1) * FLAGS.batch_size < num_of_data:
+                # now the labels are arbitary time-length
+                inputs, labels, masks = inputs_and_labels
+                input_and_label = (np.reshape(inputs[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :, :],
+                                              (FLAGS.batch_size, self.hwc_input[0] * self.hwc_input[1], -1)),
+                                   labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :],
+                                   masks[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :],
+                                    np.array([1]))
+                # input_and_label = input,label
+                # input = (batch_size, loc_map)
+                # loc_map: tensor (3,3,features)
+                # feature = n-vector
+                # label = ( batch_size, time_step(8), num_of_drugs(69) )
+                target = labels[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :] * masks[i * FLAGS.batch_size:(i + 1) * FLAGS.batch_size, :, :]
+                output, loss_value = self.sess.run([self.output, self.loss], {self.input_tensor: input_and_label})
+                # output = output*(size_msg[0]-size_msg[1]+1e-4)+size_msg[2]
+                # print("sample:  ",output[0])
+                test_loss += loss_value
+            else:
+                break
+        test_loss /= (num_of_batch * FLAGS.batch_size)
+        # validation_r_square /= (num_of_batch * FLAGS.batch_size)
+        print("test_loss: ", test_loss)
+        # print("validation_r_square: ",validation_r_square)
+        print("target-output: ", np.mean(target - output))
 
 
 def read_next(inputs_and_labels,id,batch_size):
@@ -415,15 +481,19 @@ def main():
     data_path = "../test2.csv"
     hwc_input = (3, 3, 2)
     len_of_years = 8
-    opt = "train"
-    model_path= "./save/my-model-final-58061"
+    # opt = "train"
+    opt = "test"
+    # model_path= "./save/my-model-14520"
+    model_path = "./save/my-model-2420"
     # mnist = input_data.read_data_sets(data_directory, one_hot=True)
     # params: hidden_size, LEN_OF_YEAR,NUM_OF_CLASSES,HWC_INPUT,learning_rate,batch_size
-    model = VAE(FLAGS.hidden_size, len_of_years, FLAGS.drug_num,hwc_input, FLAGS.learning_rate,FLAGS.batch_size)
+
     if opt == "train":
+        model = VAE(FLAGS.hidden_size, len_of_years, FLAGS.drug_num, hwc_input, FLAGS.learning_rate, FLAGS.batch_size,MODE=opt)
         model.train_model(FLAGS,data_path)
     else:
-        model.validation_model(data_path,model_path)
+        model = VAE(FLAGS.hidden_size, len_of_years, FLAGS.drug_num, hwc_input, FLAGS.learning_rate, FLAGS.batch_size,MODE=opt)
+        model.inference(data_path,FLAGS,model_path)
 
     # origin_data = load_data("../test2.csv")
     # input_data,input_label = data_preprocess(origin_data)
